@@ -28,16 +28,19 @@ namespace apmlog
 
 		bool threadrun = true;
 
+		int totalLogIdsCount = 0;
+
+		//String firmwareVersionString = "";
+		SortedSet<String> allLogIds = new SortedSet<String> ();
+		System.Globalization.CultureInfo cultureInfo = new System.Globalization.CultureInfo("en-US");
 
 		int receivedbytes = 0;
-		serialstatus status = serialstatus.Connecting;
+		serialstatus status = serialstatus.Idle;
 		Object thisLock = new Object();
 		System.IO.StreamWriter sw;
 		string logFileName = "";
 		List<Data> flightdata = new List<Data>();
 		Model runmodel = new Model();
-		int currentlog = 0;
-		int logcount = 0;
 
 
 
@@ -51,12 +54,19 @@ namespace apmlog
 
 		enum serialstatus
 		{
-			Connecting,
-			Createfile,
+			Idle,
+			Wakeup,
+			Awake,
+			SeekingPrompt,
+			SeekingLogs,
+			CollectingLogIds,
+			CreateLogFile,
 			Closefile,
 			Reading,
 			Waiting,
-			Done
+			DoneDumping,
+			ConfirmErasing,
+			Finished
 		}
 
 		public static void Main (string[] args)
@@ -66,15 +76,11 @@ namespace apmlog
 			log.Info("******************* Logging Configured *******************");
 
 			Console.WriteLine ("******************* Connecting to APM *******************");
-//			foreach (string a in args) {
-//				Console.WriteLine ("'" + a + "'");
-//			}
+
 
 			string lePort = "bogus";
 			string[] portNames = apmcomms.Comms.SerialPort.GetPortNames ();
-			Console.WriteLine ("portNames: ");
 			foreach (string portName in portNames) {
-			//	Console.WriteLine (portName);
 				lePort = portName;
 			}
 
@@ -108,18 +114,18 @@ namespace apmlog
 			}
 		}
 
-		private void readAndSleep(int time)
+		private void readUntilTime(int time)
 		{
-			reportStatus ("readAndSleep: " + time);
+			reportStatus ("readUntilTime: " + time);
 
 			DateTime start = DateTime.Now;
 
-			while ((DateTime.Now - start).TotalMilliseconds < time )
-			{
-				try
-				{
+			while ((DateTime.Now - start).TotalMilliseconds < time ) {
+				try {
 					if (comPort.BytesToRead > 0) {
-						comPort_DataReceived((object)null, (SerialDataReceivedEventArgs)null);
+						processReceivedData();
+					} else {
+						//System.Threading.Thread.Sleep(10);
 					}
 				}
 				catch { 
@@ -129,10 +135,138 @@ namespace apmlog
 			}
 		}
 
+		private void seekLogsMode()
+		{
+			try
+			{
+				System.Threading.Thread.Sleep(200);
+				reportStatus ("Sending logs mode request...");
+				comPort.Write("\n\n\n\n");
+				System.Threading.Thread.Sleep(500);
+				comPort.DiscardInBuffer();
+				comPort.Write("logs\r");
+				//request logs mode
+				status = serialstatus.SeekingLogs;
+			}
+			catch { 
+			
+			}
+	
+		}
+
+		private void seekCommandPrompt()
+		{
+
+			var t11 = new System.Threading.Thread(delegate() {
+				threadrun = true;
+				status = serialstatus.SeekingPrompt;
+
+			//	readUntilTime(100);
+
+				try {
+					reportStatus ("Requesting command prompt...");
+					comPort.Write("\n\n\n\n"); 
+					//comPort.Write("\n\n\n\nexit\r\nlogs\r\n"); // more in "connecting"
+				}
+				catch {
+				}
+
+				while (threadrun) {
+					try {
+						System.Threading.Thread.Sleep(10);
+						if (!comPort.IsOpen)
+							break;
+
+						while (threadrun && (comPort.BytesToRead >= 4) ) {
+							processReceivedData();
+						}
+					}
+					catch (Exception ex) {
+						log.Error("crash in comport reader " + ex);
+					} // cant exit unless told to
+				}
+
+				if (allLogIds.Count > 0) {
+					dumpAllLogs();
+				}
+
+				reportStatus("T11 thread close");
+			}) {Name = "T11"};
+			t11.Start();
+		}
+
+		private void wakeupArdupilot()
+		{
+			status = serialstatus.Wakeup;
+
+			bool continueWakeup = true;
+			bool wakeupSuccess = false;
+
+			reportStatus("open comPort: " + comPort.PortName);
+
+			try {
+				comPort.ReadTimeout = 500;
+
+				if (!comPort.IsOpen) {
+					comPort.Open();
+				}
+
+				reportStatus("comPort open: " + comPort.IsOpen);
+				if (!comPort.IsOpen) {
+					String errorMsg = "Failed to open comPort " + comPort.PortName;
+					reportError(errorMsg);
+					return;
+				}
+				comPort.toggleDTR();
+				comPort.DiscardInBuffer();
+
+
+				for (int i = 0; (i < 10) && continueWakeup; i++) {
+					reportStatus("Sending wakeup...");
+					try {
+						comPort.Write("\r\n\r\n\r\n");
+
+						System.Threading.Thread.Sleep(500);
+
+						if (comPort.BytesToRead > 7) {
+							continueWakeup = false;
+							wakeupSuccess = true;
+						}
+					}
+					catch (Exception wakeEx) {
+						reportError("Error on wakeup: " + wakeEx.ToString());
+						continueWakeup = false;
+					}
+				}
+
+
+
+//				if (wakeupSuccess) {
+//					firmwareVersionString.Trim();
+//					//"ArduPlane V2.72]"
+//					int lastBracketIdx = firmwareVersionString.LastIndexOf(']');
+//					if (-1 != lastBracketIdx) {
+//						firmwareVersionString.Remove(lastBracketIdx);
+//					}
+//					reportStatus("firmwareVersionString: " + firmwareVersionString);
+//				}
+
+			}
+			catch (Exception ex) {
+				reportError("comPort wakeup ex: " + ex.ToString());
+			}
+
+			if (!wakeupSuccess) {
+				reportError("Could not wakeup board!");
+			} else {
+				status =	serialstatus.Awake;
+			}
+
+
+		}
+
 		private void loadLog (string port, int baud)
 		{
-//			status = serialstatus.Connecting;
-//			comPort = MainV2.comPort.BaseStream;
 
 			comPort = new apmcomms.Comms.SerialPort ();
 
@@ -142,80 +276,16 @@ namespace apmlog
 			comPort.RtsEnable = false;
 			comPort.ReadBufferSize = 4 * 1024;
 
-			Console.WriteLine ("open comPort: " + comPort.PortName);
 
-			try
-			{
+			wakeupArdupilot ();
 
-				if (!comPort.IsOpen) {
-					comPort.Open();
-				}
-
-				reportStatus("comPort open: " + comPort.IsOpen);
-
-				comPort.toggleDTR();
-				comPort.DiscardInBuffer();
-
-				try {
-					// try provoke a response
-
-					//TODO loop sending CR LF until we get ArduPlane or ArduCopter
-					comPort.Write("\n\n?\r\n\n");
-				}
-				catch { }
-
-				waitForBytesAvailable(15000);
-
-				reportStatus ("BytesToRead: " + comPort.BytesToRead );
-
+			if (status == serialstatus.Awake) {
+				seekCommandPrompt();
 			}
-			catch (Exception ex)
-			{
-				log.Error("Error opening comport", ex);
-				reportError("comport open ex: " + ex.ToString());
-				if (ex.Message == "No such file or directory") {
-					reportError("comport open ex data: " + ex.Data.ToString());
-				}
-			}
-
-//			var t11 = new System.Threading.Thread(delegate()
-//			                                      {
-//				threadrun = true;
-			//				readAndSleep(100);
-//
-//				try{
-//					comPort.Write("\n\n\n\nexit\r\nlogs\r\n"); // more in "connecting"
-//				}
-//				catch{}
-//
-//
-//				while (threadrun)
-//				{
-//					try
-//					{
-//						System.Threading.Thread.Sleep(10);
-//						if (!comPort.IsOpen)
-//							break;
-//						while (comPort.BytesToRead >= 4)
-//						{
-//							comPort_DataReceived((object)null, (SerialDataReceivedEventArgs)null);
-//						}
-//					}
-//					catch (Exception ex)
-//					{
-//						log.Error("crash in comport reader " + ex);
-//					} // cant exit unless told to
-//				}
-//				log.Info("Comport thread close");
-//			}) {Name = "comport reader"};
-//			t11.Start();
-
-
-			downloadThread (2,3); //TODO
 
 		}
 
-		void comPort_DataReceived(object sender, SerialDataReceivedEventArgs e)
+		void processReceivedData()
 		{
 			try {
 				while (comPort.BytesToRead > 0 && threadrun) {
@@ -240,32 +310,34 @@ namespace apmlog
 
 					receivedbytes += line.Length;
 
-//					reportStatus("status: " + status + " length: " + receivedbytes);
-//					reportStatus("line: " + line);
-
 					switch (status) {
 
-						case serialstatus.Done:
-							reportStatus(" " + status + " line: " + line);
-
+						case serialstatus.CollectingLogIds:
 							{
-								Regex regex2 = new Regex(@"^Log ([0-9]+)[,\s]", RegexOptions.IgnoreCase);
-								if (regex2.IsMatch(line))
-								{
-									MatchCollection matchs = regex2.Matches(line);
-									logcount = int.Parse(matchs[0].Groups[1].Value);
-									reportStatus("logcount: " + logcount);
-									//genchkcombo(logcount);
-									//status = serialstatus.Done;
+								Regex regex2 = new Regex(@"^Log ([0-9]+)[,\s]", RegexOptions.IgnoreCase); //"Log 26,    start 567,   end 1140\r\n"
+								if (regex2.IsMatch(line)) {
+									MatchCollection match = regex2.Matches(line);
+									String curLogId = match[0].Groups[1].Value;
+									reportStatus ("Log Available: " + line); // curLogId);
+									allLogIds.Add(curLogId);
+									if (allLogIds.Count == totalLogIdsCount) {
+										reportStatus("Done collecting log IDs...");
+										comPort.DiscardInBuffer();
+										threadrun = false;
+									}
+								} 
+								else {
+									reportStatus("status: " + status + " line: " + line);
+									if (line.Contains("No logs")) {
+										status = serialstatus.DoneDumping;
+									}
 								}
 							}
-							if (line.Contains("No logs")) {
-								status = serialstatus.Done;
-							}
+
 							break;
 
-						case serialstatus.Connecting:
-							reportStatus(" " + status + " line: " + line);
+						case serialstatus.SeekingPrompt:
+							reportStatus("status: " + status + " line: " + line);
 
 							if (line.Contains("ENTER") || 
 							    line.Contains("GROUND START") || 
@@ -274,46 +346,68 @@ namespace apmlog
 							    line.Contains("CLI") || 
 							    line.Contains("Ardu"))
 							{
-								try
-								{
-									System.Threading.Thread.Sleep(200);
-									comPort.Write("\n\n\n\n");
-								}
-								catch { }
-
-								System.Threading.Thread.Sleep(500);
-
-								//request logs mode
-								comPort.Write("logs\r");
-								status = serialstatus.Done;
+								seekLogsMode();
 							}
 							break;
 
+						case serialstatus.SeekingLogs:
+							{
+								//Look for line that says eg "19 logs"
+								Regex regex3 = new Regex(@"([0-9]+) logs" , RegexOptions.IgnoreCase);
+								if (regex3.IsMatch(line)) {
+									MatchCollection match = regex3.Matches(line);
+									totalLogIdsCount = int.Parse ( match[0].Groups[1].Value);
+									reportStatus ("Expecting " + totalLogIdsCount + " log IDs");
+									status = serialstatus.CollectingLogIds;
+								}
+								else {
+									reportStatus("status: " + status + " line: " + line);
+								}
+							}
+							break;
+
+
+
 						case serialstatus.Closefile:
-							reportStatus(" " + status + " line: " + line);
-
+							//reportStatus(" " + status + " line: " + line);
+							reportStatus ("Flushing " + logFileName);
+							sw.Flush();
 							sw.Close();
-							System.IO.TextReader tr = new System.IO.StreamReader(logFileName);
 
-							reportStatus("Creating KML for " + logFileName);
-
+							flightdata.Clear();
+							System.IO.TextReader tr = new System.IO.StreamReader(logFileName);							
 							while (tr.Peek() != -1) {
-								processRawLogLine(tr.ReadLine());
+								line = tr.ReadLine();
+								processRawLogLine(line);
 							}
 							tr.Close();
 
-							try {
-								writeKML(logFileName + ".kml");
-							}
-							catch { 
-								//TODO  usualy invalid lat long error
+							if (flightdata.Count > 0) {
+								try {
+									string gpxFileName = logFileName.Replace (".log", ".gpx");
+									writeGPX(gpxFileName);
+									writeKML(logFileName + ".kml");
+								}
+								catch { 
+									//TODO  usualy invalid lat long error
+								} 
 							} 
+							else {
+								reportStatus("No flight data: skip GPX + KML");
+							}
 
-							status = serialstatus.Done;
+
+							positionindex = 0;
+							modelList.Clear();
+							flightdata.Clear();
+							positionsList = new List<Point3D>[200];
+							cmdList.Clear();
+
+							status = serialstatus.DoneDumping;
 							comPort.DiscardInBuffer();
 							break;
 
-						case serialstatus.Createfile:
+					case serialstatus.CreateLogFile:
 							reportStatus(" " + status + " line: " + line);
 							receivedbytes = 0;
 							status = serialstatus.Waiting;
@@ -329,10 +423,10 @@ namespace apmlog
 
 						case serialstatus.Reading:
 							if (line.Contains("packets read") || 
-						    line.Contains("Done") || 
-						    line.Contains("logs enabled"))
+							    line.Contains("Done") || 
+							    line.Contains("logs enabled"))
 							{
-								reportStatus(" " + status + " line: " + line);
+								reportStatus("status: " + status + " line: " + line);
 								status = serialstatus.Closefile;
 								break;
 							}
@@ -340,7 +434,7 @@ namespace apmlog
 							continue;
 
 						case serialstatus.Waiting:
-							reportStatus(" " + status + " line: " + line);
+							reportStatus("status: " + status + " line: " + line);
 							if (line.Contains("Dumping Log") || 
 							    line.Contains("GPS:") || 
 							    line.Contains("NTUN:") || 
@@ -350,6 +444,23 @@ namespace apmlog
 								status = serialstatus.Reading;
 							}
 							break;
+
+					case serialstatus.DoneDumping:
+						eraseAllLogs();
+						break;
+
+					case serialstatus.ConfirmErasing:
+						if (line.Contains ("No logs")) {
+							status = serialstatus.Finished;
+						}
+						else {
+							reportStatus("status: " + status + " line: " + line);
+						}
+						break;
+
+					default:
+						reportStatus("status: " + status + " line: " + line);
+						break;
 					}
 
 				}
@@ -362,109 +473,113 @@ namespace apmlog
 		string lastline = "";
 		string[] ctunlast = new string[] { "", "", "", "", "", "", "", "", "", "", "", "", "", "" };
 		string[] ntunlast = new string[] { "", "", "", "", "", "", "", "", "", "", "", "", "", "" };
-		List<PointLatLngAlt> cmd = new List<PointLatLngAlt>();
+		List<PointLatLngAlt> cmdList = new List<PointLatLngAlt>();
 		Point3D oldlastpos = new Point3D();
 		Point3D lastpos = new Point3D();
 
+		private void processGPSLogLine(string[] items)
+		{
+
+		}
+
 		private void processRawLogLine(string line)
 		{
-			//TODO WTF
-//			if (CHK_arducopter.Checked)
-//			{
-//				MainV2.comPort.MAV.cs.firmware = MainV2.Firmwares.ArduCopter2;
-//			}
-//			else
-//			{
-//				MainV2.comPort.MAV.cs.firmware = MainV2.Firmwares.ArduPlane;
-//			}
 
-			reportStatus ("processRawLogLine:");
-			reportStatus (line);
+//			reportStatus ("processRawLogLine: " + line);
 
-			try
-			{
+			try {
 				line = line.Replace(", ", ",");
 				line = line.Replace(": ", ":");
 
 				string[] items = line.Split(',', ':');
 
-				if (items[0].Contains("CMD"))
-				{
-					if (flightdata.Count == 0)
-					{
-						if (int.Parse(items[2]) <= (int)95) //TODO ArdupilotMega.MAVLink.MAV_CMD.LAST) // wps
-						{
-							PointLatLngAlt temp = new PointLatLngAlt(double.Parse(items[7], new System.Globalization.CultureInfo("en-US")) / 10000000, double.Parse(items[8], new System.Globalization.CultureInfo("en-US")) / 10000000, double.Parse(items[6], new System.Globalization.CultureInfo("en-US")) / 100, items[1].ToString());
-							cmd.Add(temp);
+				//reportStatus ("items[0]: " + items[0]);
+
+				if (items[0].Contains("CMD")) {
+					if (flightdata.Count == 0) {
+						if (int.Parse(items[2]) <= (int)95) { //TODO ArdupilotMega.MAVLink.MAV_CMD.LAST) // wps
+							PointLatLngAlt temp = new PointLatLngAlt(double.Parse(items[7], cultureInfo) / 10000000, double.Parse(items[8], cultureInfo) / 10000000, double.Parse(items[6], cultureInfo) / 100, items[1].ToString());
+							cmdList.Add(temp);
 						}
 					}
 				}
-				if (items[0].Contains("MOD"))
-				{
+				if (items[0].Contains("MOD")) {
 					positionindex++;
-					modelist.Add(""); // i cant be bothered doing this properly
-					modelist.Add("");
-					modelist[positionindex] = (items[1]);
+					modelList.Add(""); // i cant be bothered doing this properly
+					modelList.Add("");
+					modelList[positionindex] = (items[1]);
 				}
 				//GPS, 1, 15691, 10, 0.00, -35.3629379, 149.1650850, -0.08, 585.41, 0.00, 126.89
-				if (items[0].Contains("GPS") && items[2] == "1" && items[4] != "0" && items[4] != "-1" && lastline != line) // check gps line and fixed status
-				{
-					//TODO wtf
-//					MainV2.comPort.MAV.cs.firmware = MainV2.Firmwares.ArduPlane;
+				if (items[0].Contains("GPS") && 
+				    items[2] == "1" && 
+				    items[4] != "0" && 
+				    items[4] != "-1" && 
+				    lastline != line) 
+				{ // check gps line and fixed status
 
-					if (position[positionindex] == null)
-						position[positionindex] = new List<Point3D>();
+					//TODO arduplane
+					if (positionsList[positionindex] == null)
+						positionsList[positionindex] = new List<Point3D>();
 
-					if (double.Parse(items[4], new System.Globalization.CultureInfo("en-US")) == 0)
+					if (double.Parse(items[4], cultureInfo) == 0)
 						return;
 
-					double alt = double.Parse(items[6], new System.Globalization.CultureInfo("en-US"));
+					double alt = double.Parse(items[6], cultureInfo);
 
-					if (items.Length == 11 && items[6] == "0.0000")
-						alt = double.Parse(items[7], new System.Globalization.CultureInfo("en-US"));
-					if (items.Length == 11 && items[6] == "0")
-						alt = double.Parse(items[7], new System.Globalization.CultureInfo("en-US"));
+					if (items.Length == 11) {
+						if ((items[6] == "0.0000") || (items[6] == "0")) {
+							alt = double.Parse(items[7], cultureInfo);
+						}
+					}
 
 
-					position[positionindex].Add(new Point3D(double.Parse(items[5], new System.Globalization.CultureInfo("en-US")), double.Parse(items[4], new System.Globalization.CultureInfo("en-US")), alt));
+					double x = double.Parse(items[5],cultureInfo);
+					double y = double.Parse(items[4], cultureInfo);
+
+
+                    positionsList[positionindex].Add(new Point3D(x, y, alt));
+
 					oldlastpos = lastpos;
-					lastpos = (position[positionindex][position[positionindex].Count - 1]);
+					lastpos = (positionsList[positionindex][positionsList[positionindex].Count - 1]);
 					lastline = line;
 				}
-				if (items[0].Contains("GPS") && items[4] != "0" && items[4] != "-1" && items.Length <= 9) // AC
+				if (items[0].Contains("GPS") && 
+					    items[4] != "0" && 
+					    items[4] != "-1" && 
+					    items.Length <= 9) // AC
 				{
-					//TODO wtf
+						//TODO arducopter
 
-//					MainV2.comPort.MAV.cs.firmware = MainV2.Firmwares.ArduCopter2;
+					if (positionsList[positionindex] == null)
+						positionsList[positionindex] = new List<Point3D>();
 
-					if (position[positionindex] == null)
-						position[positionindex] = new List<Point3D>();
-
-					if (double.Parse(items[4], new System.Globalization.CultureInfo("en-US")) == 0)
+					if (double.Parse(items[4], cultureInfo) == 0)
 						return;
 
-					double alt = double.Parse(items[5], new System.Globalization.CultureInfo("en-US"));
+					double alt = double.Parse(items[5], cultureInfo);
 
-					position[positionindex].Add(new Point3D(double.Parse(items[4], new System.Globalization.CultureInfo("en-US")), double.Parse(items[3], new System.Globalization.CultureInfo("en-US")), alt));
+					positionsList[positionindex].Add(new Point3D(double.Parse(items[4], cultureInfo), double.Parse(items[3], cultureInfo), alt));
 					oldlastpos = lastpos;
-					lastpos = (position[positionindex][position[positionindex].Count - 1]);
+					lastpos = (positionsList[positionindex][positionsList[positionindex].Count - 1]);
 					lastline = line;
 
 				}
 				//GPS, 1, 15691, 10, 0.00, -35.3629379, 149.1650850, -0.08, 585.41, 0.00, 126.89
-				if (items[0].Contains("GPS") && items[1] == "3" && items[4] != "0" && items[4] != "-1" && lastline != line) // check gps line and fixed status
+				if (items[0].Contains("GPS") && 
+					    items[1] == "3" && 
+					    items[4] != "0" && 
+					    items[4] != "-1" && 
+					    lastline != line) // check gps line and fixed status
 				{
-					if (position[positionindex] == null)
-						position[positionindex] = new List<Point3D>();
+					if (positionsList[positionindex] == null)
+						positionsList[positionindex] = new List<Point3D>();
 
-					//  if (double.Parse(items[4], new System.Globalization.CultureInfo("en-US")) == 0)
-					//     return;
 
-					double alt = double.Parse(items[8], new System.Globalization.CultureInfo("en-US"));
+					double alt = double.Parse(items[8], cultureInfo);
 
-					position[positionindex].Add(new Point3D(double.Parse(items[6], new System.Globalization.CultureInfo("en-US")), double.Parse(items[5], new System.Globalization.CultureInfo("en-US")), alt));
+					positionsList[positionindex].Add(new Point3D(double.Parse(items[6], cultureInfo), double.Parse(items[5], cultureInfo), alt));
 					oldlastpos = lastpos;
-					lastpos = (position[positionindex][position[positionindex].Count - 1]);
+					lastpos = (positionsList[positionindex][positionsList[positionindex].Count - 1]);
 					lastline = line;
 				}
 				if (items[0].Contains("CTUN"))
@@ -474,7 +589,7 @@ namespace apmlog
 				if (items[0].Contains("NTUN"))
 				{
 					ntunlast = items;
-					line = "ATT:" + double.Parse(ctunlast[3], new System.Globalization.CultureInfo("en-US")) * 100 + "," + double.Parse(ctunlast[6], new System.Globalization.CultureInfo("en-US")) * 100 + "," + double.Parse(items[1], new System.Globalization.CultureInfo("en-US")) * 100;
+					line = "ATT:" + double.Parse(ctunlast[3], cultureInfo) * 100 + "," + double.Parse(ctunlast[6], cultureInfo) * 100 + "," + double.Parse(items[1], cultureInfo) * 100;
 					items = line.Split(',', ':');
 				}
 				if (items[0].Contains("ATT"))
@@ -499,9 +614,9 @@ namespace apmlog
 
 							oldlastpos = lastpos;
 
-							runmodel.Orientation.roll = double.Parse(items[1], new System.Globalization.CultureInfo("en-US")) / -100;
-							runmodel.Orientation.tilt = double.Parse(items[2], new System.Globalization.CultureInfo("en-US")) / -100;
-							runmodel.Orientation.heading = double.Parse(items[3], new System.Globalization.CultureInfo("en-US")) / 100;
+							runmodel.Orientation.roll = double.Parse(items[1], cultureInfo) / -100;
+							runmodel.Orientation.tilt = double.Parse(items[2], cultureInfo) / -100;
+							runmodel.Orientation.heading = double.Parse(items[3], cultureInfo) / 100;
 
 							dat.model = runmodel;
 							dat.ctun = ctunlast;
@@ -519,38 +634,39 @@ namespace apmlog
 			}
 		}
 
-		List<string> modelist = new List<string>();
-		List<Point3D>[] position = new List<Point3D>[200];
+		List<string> modelList = new List<string>();
+		List<Point3D>[] positionsList = new List<Point3D>[200];
 		int positionindex = 0;
 
-		private void writeGPX(string filename)
+		private void writeGPX(string gpxFilename)
 		{
-			System.Xml.XmlTextWriter xw = new System.Xml.XmlTextWriter(Path.GetDirectoryName(filename) + 
-			                                                           Path.DirectorySeparatorChar + 
-			                                                           Path.GetFileNameWithoutExtension(filename) + 
-			                                                           ".gpx",
+//			string gpxFilename = Path.GetDirectoryName (filename) + 
+//				Path.DirectorySeparatorChar + 
+//				Path.GetFileNameWithoutExtension (filename) + 
+//				".gpx";
+
+			reportStatus ("writeGPX: " + gpxFilename);
+			System.Xml.XmlTextWriter xw = new System.Xml.XmlTextWriter(gpxFilename,
 			                                                           System.Text.Encoding.ASCII);
 
 			xw.WriteStartElement("gpx");
-
 			xw.WriteStartElement("trk");
-
 			xw.WriteStartElement("trkseg");
 
 			DateTime start = new DateTime(DateTime.Now.Year,DateTime.Now.Month,DateTime.Now.Day,0,0,0);
 
-			foreach (Data mod in flightdata)
-			{
+			reportStatus ("Writing GPX flightdata for [" + flightdata.Count + "] points ");
+			foreach (Data mod in flightdata) {
 				xw.WriteStartElement("trkpt");
-				xw.WriteAttributeString("lat", mod.model.Location.latitude.ToString(new System.Globalization.CultureInfo("en-US")));
-				xw.WriteAttributeString("lon", mod.model.Location.longitude.ToString(new System.Globalization.CultureInfo("en-US")));
+				xw.WriteAttributeString("lat", mod.model.Location.latitude.ToString(cultureInfo));
+				xw.WriteAttributeString("lon", mod.model.Location.longitude.ToString(cultureInfo));
 
-				xw.WriteElementString("ele", mod.model.Location.altitude.ToString(new System.Globalization.CultureInfo("en-US")));
+				xw.WriteElementString("ele", mod.model.Location.altitude.ToString(cultureInfo));
 				xw.WriteElementString("time", start.AddMilliseconds(mod.datetime).ToString("yyyy-MM-ddTHH:mm:sszzzzzz"));
-				xw.WriteElementString("course", (mod.model.Orientation.heading).ToString(new System.Globalization.CultureInfo("en-US")));
+				xw.WriteElementString("course", (mod.model.Orientation.heading).ToString(cultureInfo));
 
-				xw.WriteElementString("roll", mod.model.Orientation.roll.ToString(new System.Globalization.CultureInfo("en-US")));
-				xw.WriteElementString("pitch", mod.model.Orientation.tilt.ToString(new System.Globalization.CultureInfo("en-US")));
+				xw.WriteElementString("roll", mod.model.Orientation.roll.ToString(cultureInfo));
+				xw.WriteElementString("pitch", mod.model.Orientation.tilt.ToString(cultureInfo));
 				//xw.WriteElementString("speed", mod.model.Orientation.);
 				//xw.WriteElementString("fix", mod.model.Location.altitude);
 
@@ -566,11 +682,7 @@ namespace apmlog
 
 		private void writeKML(string filename)
 		{
-			try
-			{
-				writeGPX(filename);
-			}
-			catch { }
+
 
 			Color[] colours = { Color.Red, Color.Orange, Color.Yellow, Color.Green, Color.Blue, Color.Indigo, Color.Violet, Color.Pink };
 
@@ -597,7 +709,7 @@ namespace apmlog
 
 			int stylecode = 0xff;
 			int g = -1;
-			foreach (List<Point3D> poslist in position)
+			foreach (List<Point3D> poslist in positionsList)
 			{
 				g++;
 				if (poslist == null)
@@ -616,8 +728,8 @@ namespace apmlog
 				Placemark pm = new Placemark();
 
 				string mode = "";
-				if (g < modelist.Count)
-					mode = modelist[g];
+				if (g < modelList.Count)
+					mode = modelList[g];
 
 				pm.name = g + " Flight Path " + mode;
 				pm.styleUrl = "#yellowLineGreenPoly";
@@ -629,8 +741,6 @@ namespace apmlog
 				Color color = Color.FromArgb(0xff, (stylecode >> 16) & 0xff, (stylecode >> 8) & 0xff, (stylecode >> 0) & 0xff);
 				log.Info("colour " + color.ToArgb().ToString("X") + " " + color.ToKnownColor().ToString());
 				style2.Add(new LineStyle(color, 4));
-
-
 
 				pm.AddStyle(style2);
 
@@ -652,7 +762,7 @@ namespace apmlog
 
 			Coordinates coordswp = new Coordinates();
 
-			foreach (PointLatLngAlt p1 in cmd)
+			foreach (PointLatLngAlt p1 in cmdList)
 			{
 				Point3D lePt = new  Point3D (p1.Lng, p1.Lat, p1.Alt);
 				coordswp.Add(lePt);
@@ -673,8 +783,7 @@ namespace apmlog
 
 			Model lastmodel = null;
 
-			foreach (Data mod in flightdata)
-			{
+			foreach (Data mod in flightdata) {
 				l++;
 				if (mod.model.Location.latitude == 0)
 					continue;
@@ -713,14 +822,14 @@ namespace apmlog
 				}
 				catch { }
 
-				try
-				{
-
-					pmplane.Point = new KmlPoint((float)model.Location.longitude, (float)model.Location.latitude, (float)model.Location.altitude);
+				try {
+					pmplane.Point = new KmlPoint((float)model.Location.longitude, 
+					                             (float)model.Location.latitude, 
+					                             (float)model.Location.altitude);
 					pmplane.Point.AltitudeMode = altmode;
 
 					Link link = new Link();
-					link.href = "block_plane_0.dae";
+					link.href = "block_plane_0.dae"; //TODO
 
 					model.Link = link;
 
@@ -736,12 +845,13 @@ namespace apmlog
 			}
 
 			kml.Document.Add(fldr);
-
+			reportStatus ("Saving KML in " + filename);
 			kml.Save(filename);
 
 			// create kmz - aka zip file
 
-			FileStream fs = File.Open(filename.Replace(".log.kml", ".kmz"), FileMode.Create);
+			string kmzFilename = filename.Replace (".log.kml", ".kmz");
+			FileStream fs = File.Open(kmzFilename, FileMode.Create);
 			ZipOutputStream zipStream = new ZipOutputStream(fs);
 			zipStream.SetLevel(9); //0-9, 9 being the highest level of compression
 
@@ -790,48 +900,61 @@ namespace apmlog
 
 
 			zipStream.IsStreamOwner = true;	// Makes the Close also Close the underlying stream
+			reportStatus ("Flushing KMZ file: " + kmzFilename);
+			zipStream.Flush ();
 			zipStream.Close();
 
-			positionindex = 0;
-			modelist.Clear();
-			flightdata.Clear();
-			position = new List<Point3D>[200];
-			cmd.Clear();
 		}
 
 
-		private void downloadThread(int startlognum, int endlognum)
+		private void dumpAllLogs()
 		{
 			threadrun = true;
 			System.Threading.Thread t12 = new System.Threading.Thread (delegate() { 
 
 				try {
-					comPort.Write("\n\n\n\nexit\r\nlogs\r\n"); 
+					//comPort.Write("\n\n\n\nexit\r\nlogs\r\n"); 
 
-					for (int a = startlognum; a <= endlognum; a++) {
-						currentlog = a;
+					foreach (String logId in allLogIds) {
+						comPort.DiscardInBuffer();
+
+						String cmd = "dump " + logId + "\r";
+						reportStatus (cmd);
 						System.Threading.Thread.Sleep(100);
-						comPort.Write ("dump " + a.ToString() + "\r\n");
+						comPort.Write (cmd );
 						System.Threading.Thread.Sleep(100);
 						comPort.DiscardInBuffer();
-						status = serialstatus.Createfile;
+						status = serialstatus.CreateLogFile;
 
-						while (status != serialstatus.Done) {
-							readAndSleep(100);
+						while (status != serialstatus.DoneDumping) {
+							readUntilTime(1000);
 						}
 					}
 				}
 				catch (Exception downloadEx) {
-					reportError("ex downloadThread" + downloadEx);
+					reportError("ex dumpAllLogs" + downloadEx);
 				}
+
+				reportStatus("T12 thread close");
+
 			});
 
-			t12.Name = "Log Download All thread";
+			t12.Name = "T12 dumpAllLogs";
 			t12.Start();
 
 
 		}
 
+
+		private void eraseAllLogs() 
+		{
+			comPort.Write("erase\r");
+			comPort.DiscardInBuffer();
+			reportStatus("Erasing logs...");
+			System.Threading.Thread.Sleep(30000);
+			comPort.DiscardInBuffer();
+			status = serialstatus.ConfirmErasing;
+		}
 
 
 		public static Color HexStringToColor(string hexColor)
@@ -873,9 +996,10 @@ namespace apmlog
 		/**
 		 * Replaces TXT_seriallog nonsense
 		 * */
-		private void reportStatus(string status) 
+		private void reportStatus(String status) 
 		{
 			lock (thisLock) {
+				log.Info(status);
 				Console.WriteLine (status);
 			}
 		}
@@ -883,8 +1007,10 @@ namespace apmlog
 		/**
 		 * Replaces CustomMessageBox nonsense
 		 * */
-		private void reportError(string error) 
+		private void reportError(String error) 
 		{
+			log.Error (error);
+			Console.WriteLine (status);
 			Console.Error.WriteLine(error);
 		}
 	}
