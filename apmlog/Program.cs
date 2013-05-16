@@ -116,9 +116,9 @@ namespace apmlog
 
 		private void readUntilTime(int time)
 		{
-			reportStatus ("readUntilTime: " + time);
-
 			DateTime start = DateTime.Now;
+			DateTime endTime = start.AddMilliseconds (time);
+			reportStatus ("readUntilTime: " + endTime.ToLocalTime());
 
 			while ((DateTime.Now - start).TotalMilliseconds < time ) {
 				try {
@@ -300,12 +300,14 @@ namespace apmlog
 							line = line + "\n";
 					}
 					catch (Exception readEx) {
-						reportError("ex while reading [" + comPort.BytesToRead + "]: " + readEx);
+						if (comPort.BytesToRead > 0) {
+							reportError("ex while reading [" + comPort.BytesToRead + "]: " + readEx);
 
-						try {
-							line = comPort.ReadExisting();
+							try {
+								line = comPort.ReadExisting();
+							}
+							catch {}
 						}
-						catch {}
 					}
 
 					receivedbytes += line.Length;
@@ -450,11 +452,11 @@ namespace apmlog
 						break;
 
 					case serialstatus.ConfirmErasing:
-						if (line.Contains ("No logs")) {
+						if (line.Contains ("No logs") ||
+						    line.Contains ("logs enabled")) {
 							status = serialstatus.Finished;
-						}
-						else {
-							reportStatus("status: " + status + " line: " + line);
+							reportStatus ("Huzzah! Finished OK");
+							Environment.Exit (0);
 						}
 						break;
 
@@ -948,12 +950,10 @@ namespace apmlog
 
 		private void eraseAllLogs() 
 		{
-			comPort.Write("erase\r");
-			comPort.DiscardInBuffer();
 			reportStatus("Erasing logs...");
-			System.Threading.Thread.Sleep(30000);
-			comPort.DiscardInBuffer();
+			comPort.Write("erase\r");
 			status = serialstatus.ConfirmErasing;
+			reportStatus("ERASE CAN TAKE A MINUTE OR LONGER");
 		}
 
 
