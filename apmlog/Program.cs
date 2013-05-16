@@ -448,16 +448,25 @@ namespace apmlog
 							break;
 
 					case serialstatus.DoneDumping:
-						eraseAllLogs();
+//						if (totalLogIdsCount > 0) {
+//							eraseAllLogs();
+//						}
+//						else 
+						{
+							status = serialstatus.Finished;
+						}
 						break;
 
 					case serialstatus.ConfirmErasing:
 						if (line.Contains ("No logs") ||
 						    line.Contains ("logs enabled")) {
 							status = serialstatus.Finished;
-							reportStatus ("Huzzah! Finished OK");
-							Environment.Exit (0);
 						}
+						break;
+
+					case serialstatus.Finished:
+						reportStatus ("Huzzah! Finished OK");
+						Environment.Exit (0);
 						break;
 
 					default:
