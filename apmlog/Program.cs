@@ -33,7 +33,7 @@ namespace apmlog
 		serialstatus status = serialstatus.Connecting;
 		Object thisLock = new Object();
 		System.IO.StreamWriter sw;
-		string logfileName = "";
+		string logFileName = "";
 		List<Data> flightdata = new List<Data>();
 		Model runmodel = new Model();
 		int currentlog = 0;
@@ -94,22 +94,23 @@ namespace apmlog
 
 			DateTime start = DateTime.Now;
 
-			while ((DateTime.Now - start).TotalMilliseconds < time)
-			{
-				try
-				{
+			while ((DateTime.Now - start).TotalMilliseconds < time) {
+				try {
 					if (comPort.BytesToRead > 0)
 					{
 						return;
 					}
 				}
-				catch { threadrun = false; return; }
+				catch {
+					threadrun = false; 
+					return; 
+				}
 			}
 		}
 
-		private void readandsleep(int time)
+		private void readAndSleep(int time)
 		{
-			reportStatus ("readandsleep: " + time);
+			reportStatus ("readAndSleep: " + time);
 
 			DateTime start = DateTime.Now;
 
@@ -117,12 +118,14 @@ namespace apmlog
 			{
 				try
 				{
-					if (comPort.BytesToRead > 0)
-					{
+					if (comPort.BytesToRead > 0) {
 						comPort_DataReceived((object)null, (SerialDataReceivedEventArgs)null);
 					}
 				}
-				catch { threadrun = false;  return; }
+				catch { 
+					threadrun = false;  
+					return; 
+				}
 			}
 		}
 
@@ -143,115 +146,126 @@ namespace apmlog
 
 			try
 			{
-				reportStatus("Log_load " + comPort.IsOpen);
 
-				if (!comPort.IsOpen)
+				if (!comPort.IsOpen) {
 					comPort.Open();
+				}
 
-				reportStatus("comPort dtr");
+				reportStatus("comPort open: " + comPort.IsOpen);
+
 				comPort.toggleDTR();
-
-				reportStatus("comPort discard");
 				comPort.DiscardInBuffer();
 
+				try {
+					// try provoke a response
 
-				try
-				{
-					// try provoke a responce
+					//TODO loop sending CR LF until we get ArduPlane or ArduCopter
 					comPort.Write("\n\n?\r\n\n");
 				}
-				catch
-				{
-				}
+				catch { }
 
-				// 10 sec
-				waitForBytesAvailable(10000);
+				waitForBytesAvailable(15000);
+
+				reportStatus ("BytesToRead: " + comPort.BytesToRead );
+
 			}
 			catch (Exception ex)
 			{
 				log.Error("Error opening comport", ex);
-				Console.WriteLine ("comport open ex: " + ex.ToString());
+				reportError("comport open ex: " + ex.ToString());
 				if (ex.Message == "No such file or directory") {
-					Console.WriteLine (ex.Data.ToString());
+					reportError("comport open ex data: " + ex.Data.ToString());
 				}
 			}
 
-			var t11 = new System.Threading.Thread(delegate()
-			                                      {
-//				var start = DateTime.Now;
+//			var t11 = new System.Threading.Thread(delegate()
+//			                                      {
+//				threadrun = true;
+			//				readAndSleep(100);
+//
+//				try{
+//					comPort.Write("\n\n\n\nexit\r\nlogs\r\n"); // more in "connecting"
+//				}
+//				catch{}
+//
+//
+//				while (threadrun)
+//				{
+//					try
+//					{
+//						System.Threading.Thread.Sleep(10);
+//						if (!comPort.IsOpen)
+//							break;
+//						while (comPort.BytesToRead >= 4)
+//						{
+//							comPort_DataReceived((object)null, (SerialDataReceivedEventArgs)null);
+//						}
+//					}
+//					catch (Exception ex)
+//					{
+//						log.Error("crash in comport reader " + ex);
+//					} // cant exit unless told to
+//				}
+//				log.Info("Comport thread close");
+//			}) {Name = "comport reader"};
+//			t11.Start();
 
-				threadrun = true;
-				readandsleep(100);
 
-				try
-				{
-					comPort.Write("\n\n\n\nexit\r\nlogs\r\n"); // more in "connecting"
-				}
-				catch
-				{
-				}
+			downloadThread (2,3); //TODO
 
-				while (threadrun)
-				{
-					try
-					{
-						//updateDisplay();
-
-						System.Threading.Thread.Sleep(10);
-						if (!comPort.IsOpen)
-							break;
-						while (comPort.BytesToRead >= 4)
-						{
-							comPort_DataReceived((object)null, (SerialDataReceivedEventArgs)null);
-						}
-					}
-					catch (Exception ex)
-					{
-						log.Error("crash in comport reader " + ex);
-					} // cant exit unless told to
-				}
-				log.Info("Comport thread close");
-			}) {Name = "comport reader"};
-			t11.Start();
-
-			// doesnt seem to work on mac
-			//comPort.DataReceived += new SerialDataReceivedEventHandler(comPort_DataReceived);
-
-//			System.Threading.Thread t12 = new System.Threading.Thread(delegate() { 
-//				downloadthread(int.Parse(CHK_logs.Items[0].ToString()), 
-//				               int.Parse(CHK_logs.Items[CHK_logs.Items.Count - 1].ToString())); }
-//			);
-//			t12.Name = "Log Download All thread";
-//			t12.Start();
 		}
 
 		void comPort_DataReceived(object sender, SerialDataReceivedEventArgs e)
 		{
-			try
-			{
-				while (comPort.BytesToRead > 0 && threadrun)
-				{
+			try {
+				while (comPort.BytesToRead > 0 && threadrun) {
 					//### updateDisplay();
 
 					string line = "";
 
 					comPort.ReadTimeout = 500;
-					try
-					{
+					try {
 						line = comPort.ReadLine(); 
 						if (!line.Contains("\n"))
 							line = line + "\n";
 					}
-					catch
-					{
-						line = comPort.ReadExisting();
+					catch (Exception readEx) {
+						reportError("ex while reading [" + comPort.BytesToRead + "]: " + readEx);
+
+						try {
+							line = comPort.ReadExisting();
+						}
+						catch {}
 					}
 
 					receivedbytes += line.Length;
 
-					switch (status)
-					{
+//					reportStatus("status: " + status + " length: " + receivedbytes);
+//					reportStatus("line: " + line);
+
+					switch (status) {
+
+						case serialstatus.Done:
+							reportStatus(" " + status + " line: " + line);
+
+							{
+								Regex regex2 = new Regex(@"^Log ([0-9]+)[,\s]", RegexOptions.IgnoreCase);
+								if (regex2.IsMatch(line))
+								{
+									MatchCollection matchs = regex2.Matches(line);
+									logcount = int.Parse(matchs[0].Groups[1].Value);
+									reportStatus("logcount: " + logcount);
+									//genchkcombo(logcount);
+									//status = serialstatus.Done;
+								}
+							}
+							if (line.Contains("No logs")) {
+								status = serialstatus.Done;
+							}
+							break;
+
 						case serialstatus.Connecting:
+							reportStatus(" " + status + " line: " + line);
 
 							if (line.Contains("ENTER") || 
 							    line.Contains("GROUND START") || 
@@ -276,10 +290,12 @@ namespace apmlog
 							break;
 
 						case serialstatus.Closefile:
-							sw.Close();
-							System.IO.TextReader tr = new System.IO.StreamReader(logfileName);
+							reportStatus(" " + status + " line: " + line);
 
-							reportStatus("Creating KML for " + logfileName);
+							sw.Close();
+							System.IO.TextReader tr = new System.IO.StreamReader(logFileName);
+
+							reportStatus("Creating KML for " + logFileName);
 
 							while (tr.Peek() != -1) {
 								processRawLogLine(tr.ReadLine());
@@ -287,7 +303,7 @@ namespace apmlog
 							tr.Close();
 
 							try {
-								writeKML(logfileName + ".kml");
+								writeKML(logFileName + ".kml");
 							}
 							catch { 
 								//TODO  usualy invalid lat long error
@@ -298,38 +314,25 @@ namespace apmlog
 							break;
 
 						case serialstatus.Createfile:
+							reportStatus(" " + status + " line: " + line);
 							receivedbytes = 0;
 							status = serialstatus.Waiting;
-							logfileName = Directory.GetCurrentDirectory() + 
-								Path.DirectorySeparatorChar + 
-									DateTime.Now.ToString("yyyy-MM-dd HH-mm-ss") +".log";
-							reportStatus ("Creating log output file: " + logfileName);
-							sw = new System.IO.StreamWriter(logfileName);
+							logFileName = Directory.GetCurrentDirectory() + 
+								Path.DirectorySeparatorChar +
+								DateTime.Now.ToString("yyyy-MM-dd HH-mm-ss") + 
+								".log";
+							reportStatus ("Creating log output file: " + logFileName);
+							sw = new System.IO.StreamWriter(logFileName);
 							status = serialstatus.Reading;
 							break;
 
-						case serialstatus.Done:
-							{
-								Regex regex2 = new Regex(@"^Log ([0-9]+)[,\s]", RegexOptions.IgnoreCase);
-								if (regex2.IsMatch(line))
-								{
-									MatchCollection matchs = regex2.Matches(line);
-									logcount = int.Parse(matchs[0].Groups[1].Value);
-									//genchkcombo(logcount);
-									//status = serialstatus.Done;
-								}
-							}
-							if (line.Contains("No logs"))
-							{
-								status = serialstatus.Done;
-							}
-							break;
 
 						case serialstatus.Reading:
 							if (line.Contains("packets read") || 
 						    line.Contains("Done") || 
 						    line.Contains("logs enabled"))
 							{
+								reportStatus(" " + status + " line: " + line);
 								status = serialstatus.Closefile;
 								break;
 							}
@@ -337,6 +340,7 @@ namespace apmlog
 							continue;
 
 						case serialstatus.Waiting:
+							reportStatus(" " + status + " line: " + line);
 							if (line.Contains("Dumping Log") || 
 							    line.Contains("GPS:") || 
 							    line.Contains("NTUN:") || 
@@ -347,8 +351,6 @@ namespace apmlog
 							}
 							break;
 					}
-
-					reportStatus (line);
 
 				}
 
@@ -798,25 +800,37 @@ namespace apmlog
 		}
 
 
-//		private void downloadThread(int startlognum, int endlognum)
-//		{
-//			for (int a = startlognum; a <= endlognum; a++)
-//			{
-//				currentlog = a;
-//				System.Threading.Thread.Sleep(1100);
-//				comPort.Write("dump ");
-//				System.Threading.Thread.Sleep(100);
-//				comPort.Write(a.ToString() + "\r");
-//				comPort.DiscardInBuffer();
-//				status = serialstatus.Createfile;
-//
-//				while (status != serialstatus.Done)
-//				{
-//					System.Threading.Thread.Sleep(100);
-//				}
-//
-//			}
-//		}
+		private void downloadThread(int startlognum, int endlognum)
+		{
+			threadrun = true;
+			System.Threading.Thread t12 = new System.Threading.Thread (delegate() { 
+
+				try {
+					comPort.Write("\n\n\n\nexit\r\nlogs\r\n"); 
+
+					for (int a = startlognum; a <= endlognum; a++) {
+						currentlog = a;
+						System.Threading.Thread.Sleep(100);
+						comPort.Write ("dump " + a.ToString() + "\r\n");
+						System.Threading.Thread.Sleep(100);
+						comPort.DiscardInBuffer();
+						status = serialstatus.Createfile;
+
+						while (status != serialstatus.Done) {
+							readAndSleep(100);
+						}
+					}
+				}
+				catch (Exception downloadEx) {
+					reportError("ex downloadThread" + downloadEx);
+				}
+			});
+
+			t12.Name = "Log Download All thread";
+			t12.Start();
+
+
+		}
 
 
 
