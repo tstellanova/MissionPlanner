@@ -64,6 +64,7 @@ namespace apmlog
 			Closefile,
 			Reading,
 			Waiting,
+			DoneDumpOne,
 			DoneDumping,
 			ConfirmErasing,
 			Finished
@@ -405,12 +406,12 @@ namespace apmlog
 							positionsList = new List<Point3D>[200];
 							cmdList.Clear();
 
-							status = serialstatus.DoneDumping;
+							status = serialstatus.DoneDumpOne;
 							comPort.DiscardInBuffer();
 							break;
 
 					case serialstatus.CreateLogFile:
-							reportStatus(" " + status + " line: " + line);
+							//reportStatus(" " + status + " line: " + line);
 							receivedbytes = 0;
 							status = serialstatus.Waiting;
 							logFileName = Directory.GetCurrentDirectory() + 
@@ -428,7 +429,6 @@ namespace apmlog
 							    line.Contains("Done") || 
 							    line.Contains("logs enabled"))
 							{
-								reportStatus("status: " + status + " line: " + line);
 								status = serialstatus.Closefile;
 								break;
 							}
@@ -446,6 +446,11 @@ namespace apmlog
 								status = serialstatus.Reading;
 							}
 							break;
+
+					case serialstatus.DoneDumpOne:
+						//ignore
+						comPort.DiscardInBuffer();
+						break;
 
 					case serialstatus.DoneDumping:
 //						if (totalLogIdsCount > 0) {
@@ -472,6 +477,7 @@ namespace apmlog
 					default:
 						reportStatus("status: " + status + " line: " + line);
 						break;
+
 					}
 
 				}
@@ -937,10 +943,12 @@ namespace apmlog
 						comPort.DiscardInBuffer();
 						status = serialstatus.CreateLogFile;
 
-						while (status != serialstatus.DoneDumping) {
+						while ((status != serialstatus.DoneDumpOne) &&
+						       (status != serialstatus.DoneDumping)) {
 							readUntilTime(1000);
 						}
 					}
+					status = serialstatus.DoneDumping;
 				}
 				catch (Exception downloadEx) {
 					reportError("ex dumpAllLogs" + downloadEx);
