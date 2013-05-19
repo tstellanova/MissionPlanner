@@ -13,7 +13,6 @@ using System.Net;
 
 using System.Xml; // config file
 using System.Runtime.InteropServices; // dll imports
-using log4net;
 
 using System.Reflection;
 

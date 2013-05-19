@@ -2,8 +2,8 @@ using System;
 using apmcomms.Comms;
 using apmgeometry;
 
-using log4net;
-using log4net.Config;
+
+
 
 using KMLib;
 using KMLib.Feature;
@@ -16,19 +16,22 @@ using System.IO;
 using System.Drawing;
 using ICSharpCode.SharpZipLib.Zip;
 using Core.Geometry;
+using Mono.Options;
 
 
 namespace apmlog
 {
 	class MainClass
 	{
-		private static readonly ILog log = LogManager.GetLogger("Program");
-
 		apmcomms.Comms.SerialPort comPort;
 
+		OptionSet cmdLineOpts;
+		string comPortName = "";
+		int comPortSpeed = 115200;
 
 		bool deleteSourceLogsWhenFinished = true; //TODO get from command line
-		int skipFileSize = 256; //TODO get from command line
+		int skipFileSize = 256; //get from command line
+		int verbosity = 1;
 
 		bool threadrun = true;
 
@@ -64,6 +67,8 @@ namespace apmlog
 			public int datetime;
 		}
 
+	
+
 		enum serialstatus
 		{
 			Idle,
@@ -85,31 +90,74 @@ namespace apmlog
 		public static void Main (string[] args)
 		{
 
-			XmlConfigurator.Configure();
-			log.Info("******************* Logging Configured *******************");
+			MainClass monster = new MainClass ();
 
-			Console.WriteLine ("******************* Connecting to APM *******************");
+			if (monster.handleCommandLineArgs (args)) {
+				monster.beginProcessing ();
+			}
+		}
 
-			//TODO get port name from command line settings rather than logic in GetPortNames
-			string lePort = "bogus";
-			string[] portNames = apmcomms.Comms.SerialPort.GetPortNames ();
-			foreach (string portName in portNames) {
-				lePort = portName;
+		public void beginProcessing()
+		{
+			if (0 == comPortName.Length) {
+				string[] portNames = apmcomms.Comms.SerialPort.GetPortNames ();
+				foreach (string portName in portNames) {
+					comPortName = portName;
+				}
+			}
+			reportStatus ("***** Connecting to APM on port: " + comPortName + "*****");
+			loadLog (comPortName, comPortSpeed); //"tty.usbmodem1a12131",115200);
+		}
+
+		public bool handleCommandLineArgs(string[] args)
+		{  
+			bool okToBegin = true;
+
+			cmdLineOpts = new OptionSet () {
+				{"p|port=",
+					"Name of the port to use for communicating with ArduPilot e.g. 'tty.usbmodem1a12131'",
+					(string v) => {
+						reportStatus("comPortName: '" + v + "'");
+						comPortName = v;
+					}
+				},
+				{"b|bps=",
+					"Port speed to use when communicating with ArduPilot, an integer e.g. '115200'",
+					(int v) => comPortSpeed = v 
+				},
+				{"e|erase=",
+					"Erase logs from ArduPilot when finished loading, true/false",
+					(bool v) => deleteSourceLogsWhenFinished = v
+				},
+				{"s|skip=",
+					"Minimum size log to process eg 256. Anything smaller is skipped.",
+					(int v) => skipFileSize = v
+				},
+
+				{ "v", "increase debug message verbosity",
+					v => { 
+						if (v != null) ++verbosity; 
+					} 
+				},
+				{ "h|help",  "show this message and exit", 
+					v => { 
+						okToBegin = false;
+						reportStatus ("Usage: apmlog [OPTIONS]");
+						cmdLineOpts.WriteOptionDescriptions(Console.Out);
+					}
+				},
+			};
+
+			List<string> extra;
+			try {
+				extra = cmdLineOpts.Parse (args);
+			}
+			catch (OptionException e) {
+				reportError ("apmlog:\n" + e.Message + "\nTry `apmlog --help' for more information.");
+				okToBegin = false;
 			}
 
-
-			MainClass monster = new MainClass ();
-			monster.loadLog (lePort, 115200); //"tty.usbmodem1a12131",115200);
-		}
-
-		static void handleException(Exception ex)
-		{
-			log.Debug (ex.ToString());
-		}
-
-		public void handleCommandLineArgs(string[] args)
-		{
-
+			return okToBegin;
 		}
 
 		private void waitForBytesAvailable(int time)
@@ -172,6 +220,46 @@ namespace apmlog
 	
 		}
 
+		private void handleLogIdsCollectionLine(string line)
+		{
+			//"Log 26,    start 567,   end 1140\r\n"
+			Regex regex2 = new Regex(@"^Log ([0-9]+)[,\s]", RegexOptions.IgnoreCase); //"Log 26,"
+			if (regex2.IsMatch(line)) {
+				MatchCollection match = regex2.Matches(line);
+				String curLogId = match[0].Groups[1].Value;
+				reportStatus ("Log Available: " + line); // curLogId);
+
+				//Log Available: Log 138,    start 3379,   end 3392
+
+				APMLogFileInfo curLogInfo = new APMLogFileInfo();
+				curLogInfo.logId = curLogId;
+				Regex regex4 = new Regex(@"^Log ([0-9]+),[\s]+start[\s]+([0-9]+),[\s]+end[\s]+([0-9]+)", RegexOptions.IgnoreCase);
+
+				if (regex4.IsMatch(line)) {
+					//determine the length of the log file
+					match = regex4.Matches (line);
+					int logStart = int.Parse (match[0].Groups[2].Value);
+					int logEnd = int.Parse (match[0].Groups[3].Value);
+					curLogInfo.logLength = logEnd - logStart;
+					totalLogsLength += curLogInfo.logLength;
+				}
+
+				allLogHeaders.Add (curLogInfo.logId,curLogInfo);
+
+				if (allLogHeaders.Count == totalLogIdsCount) {
+					reportStatus("Done collecting log IDs...");
+					comPort.DiscardInBuffer();
+					threadrun = false;
+				}
+			} 
+			else {
+				reportStatus("status: " + status + " line: " + line);
+				if (line.Contains("No logs")) {
+					status = serialstatus.DoneDumping;
+				}
+			}
+		}
+
 		private void seekCommandPrompt()
 		{
 
@@ -200,7 +288,7 @@ namespace apmlog
 						}
 					}
 					catch (Exception ex) {
-						log.Error("crash in comport reader " + ex);
+						reportError("crash in comport reader " + ex);
 					} // cant exit unless told to
 				}
 
@@ -257,18 +345,6 @@ namespace apmlog
 					}
 				}
 
-
-
-//				if (wakeupSuccess) {
-//					firmwareVersionString.Trim();
-//					//"ArduPlane V2.72]"
-//					int lastBracketIdx = firmwareVersionString.LastIndexOf(']');
-//					if (-1 != lastBracketIdx) {
-//						firmwareVersionString.Remove(lastBracketIdx);
-//					}
-//					reportStatus("firmwareVersionString: " + firmwareVersionString);
-//				}
-
 			}
 			catch (Exception ex) {
 				reportError("comPort wakeup ex: " + ex.ToString());
@@ -285,14 +361,13 @@ namespace apmlog
 
 		private void loadLog (string port, int baud)
 		{
-
 			comPort = new apmcomms.Comms.SerialPort ();
 
 			comPort.PortName = port;
 			comPort.BaudRate = baud;
 			comPort.DtrEnable = false;
 			comPort.RtsEnable = false;
-			comPort.ReadBufferSize = 4 * 1024;
+			comPort.ReadBufferSize = 32 * 1024;
 
 
 			wakeupArdupilot ();
@@ -303,30 +378,36 @@ namespace apmlog
 
 		}
 
+		private string readOneLineFromComPort()
+		{
+			string line = "";
+
+			comPort.ReadTimeout = 500;
+			try {
+				line = comPort.ReadLine(); 
+				if (!line.EndsWith("\n"))
+					line = line + "\n";
+			}
+			catch (Exception readEx) {
+				if (comPort.BytesToRead > 0) {
+					reportError("ex while reading [" + comPort.BytesToRead + "]: " + readEx);
+
+					try {
+						line = comPort.ReadExisting();
+					}
+					catch {}
+				}
+			}
+
+			return line;
+		}
+
 		void processReceivedData()
 		{
 			try {
 				while (comPort.BytesToRead > 0 && threadrun) {
-					//### updateDisplay();
 
-					string line = "";
-
-					comPort.ReadTimeout = 500;
-					try {
-						line = comPort.ReadLine(); 
-						if (!line.Contains("\n"))
-							line = line + "\n";
-					}
-					catch (Exception readEx) {
-						if (comPort.BytesToRead > 0) {
-							reportError("ex while reading [" + comPort.BytesToRead + "]: " + readEx);
-
-							try {
-								line = comPort.ReadExisting();
-							}
-							catch {}
-						}
-					}
+					string line = readOneLineFromComPort();
 
 					//reportStatus ("read " + line.Length + " bytes");
 					receivedbytes += line.Length;
@@ -335,44 +416,8 @@ namespace apmlog
 
 						case serialstatus.CollectingLogIds:
 							{
-								//"Log 26,    start 567,   end 1140\r\n"
-								Regex regex2 = new Regex(@"^Log ([0-9]+)[,\s]", RegexOptions.IgnoreCase); //"Log 26,"
-								if (regex2.IsMatch(line)) {
-									MatchCollection match = regex2.Matches(line);
-									String curLogId = match[0].Groups[1].Value;
-									reportStatus ("Log Available: " + line); // curLogId);
-
-									//Log Available: Log 138,    start 3379,   end 3392
-
-									APMLogFileInfo curLogInfo = new APMLogFileInfo();
-									curLogInfo.logId = curLogId;
-									Regex regex4 = new Regex(@"^Log ([0-9]+),[\s]+start[\s]+([0-9]+),[\s]+end[\s]+([0-9]+)", RegexOptions.IgnoreCase);
-									
-									if (regex4.IsMatch(line)) {
-										//determine the length of the log file
-										match = regex4.Matches (line);
-										int logStart = int.Parse (match[0].Groups[2].Value);
-										int logEnd = int.Parse (match[0].Groups[3].Value);
-										curLogInfo.logLength = logEnd - logStart;
-										totalLogsLength += curLogInfo.logLength;
-									}
-
-									allLogHeaders.Add (curLogInfo.logId,curLogInfo);
-
-									if (allLogHeaders.Count == totalLogIdsCount) {
-										reportStatus("Done collecting log IDs...");
-										comPort.DiscardInBuffer();
-										threadrun = false;
-									}
-								} 
-								else {
-									reportStatus("status: " + status + " line: " + line);
-									if (line.Contains("No logs")) {
-										status = serialstatus.DoneDumping;
-									}
-								}
+								handleLogIdsCollectionLine(line);
 							}
-
 							break;
 
 						case serialstatus.SeekingPrompt:
@@ -391,9 +436,6 @@ namespace apmlog
 
 						case serialstatus.SeekingLogs:
 							{
-						//TODO parse the number of bytes for each log, skip short logs 
-						//Log Available: Log 138,    start 3379,   end 3392
-
 								//Look for line that says eg "19 logs"
 								Regex regex3 = new Regex(@"([0-9]+) logs" , RegexOptions.IgnoreCase);
 								if (regex3.IsMatch(line)) {
@@ -407,7 +449,6 @@ namespace apmlog
 								}
 							}
 							break;
-
 
 
 						case serialstatus.Closefile:
@@ -785,7 +826,7 @@ namespace apmlog
 
 				Style style2 = new Style();
 				Color color = Color.FromArgb(0xff, (stylecode >> 16) & 0xff, (stylecode >> 8) & 0xff, (stylecode >> 0) & 0xff);
-				log.Info("colour " + color.ToArgb().ToString("X") + " " + color.ToKnownColor().ToString());
+//				reportStatus("colour " + color.ToArgb().ToString("X") + " " + color.ToKnownColor().ToString());
 				style2.Add(new LineStyle(color, 4));
 
 				pm.AddStyle(style2);
@@ -967,7 +1008,7 @@ namespace apmlog
 						allLogHeaders.TryGetValue(logId, out curLogHeader);
 
 						String logSummary = "log id " + logId + ", length: " + curLogHeader.logLength;
-						if (curLogHeader.logLength < skipFileSize) { //TODO get the limit value from cmd line parameters
+						if (curLogHeader.logLength < skipFileSize) {
 							reportStatus ("skipping " + logSummary);
 						}
 						else {
@@ -1072,7 +1113,6 @@ namespace apmlog
 		private void reportStatus(String status) 
 		{
 			lock (thisLock) {
-				log.Info(status);
 				Console.WriteLine (status);
 			}
 		}
@@ -1082,7 +1122,6 @@ namespace apmlog
 		 * */
 		private void reportError(String error) 
 		{
-			log.Error (error);
 			Console.WriteLine (status);
 			Console.Error.WriteLine(error);
 		}
