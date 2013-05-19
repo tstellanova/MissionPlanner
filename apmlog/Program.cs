@@ -33,6 +33,7 @@ namespace apmlog
 		bool threadrun = true;
 
 		int totalLogIdsCount = 0;
+		int totalLogsLength = 0;
 
 		//String firmwareVersionString = "";
 		SortedDictionary<String,APMLogFileInfo> allLogHeaders = new SortedDictionary<String,APMLogFileInfo> ();
@@ -142,7 +143,7 @@ namespace apmlog
 					if (comPort.BytesToRead > 0) {
 						processReceivedData();
 					} else {
-						//System.Threading.Thread.Sleep(10);
+						System.Threading.Thread.Sleep(100);
 					}
 				}
 				catch { 
@@ -353,6 +354,7 @@ namespace apmlog
 										int logStart = int.Parse (match[0].Groups[2].Value);
 										int logEnd = int.Parse (match[0].Groups[3].Value);
 										curLogInfo.logLength = logEnd - logStart;
+										totalLogsLength += curLogInfo.logLength;
 									}
 
 									allLogHeaders.Add (curLogInfo.logId,curLogInfo);
@@ -495,6 +497,10 @@ namespace apmlog
 						    line.Contains ("logs enabled")) {
 							status = serialstatus.Finished;
 						}
+						break;
+
+					case serialstatus.Finished:
+
 						break;
 
 					default:
@@ -982,7 +988,7 @@ namespace apmlog
 
 					status = serialstatus.DoneDumping;
 
-					if (deleteSourceLogsWhenFinished && (totalLogIdsCount > 0)) {
+					if (deleteSourceLogsWhenFinished && (totalLogIdsCount > 0) && (totalLogsLength > 256) ) { //TODO funky logic
 						eraseAllLogs();
 					}
 					else 
@@ -1018,8 +1024,8 @@ namespace apmlog
 			status = serialstatus.ConfirmErasing;
 			reportStatus("ERASE CAN TAKE A MINUTE OR LONGER");
 
-			while (status != serialstatus.Finished)  {
-				readUntilTime(500);
+			while (status == serialstatus.ConfirmErasing)  {
+				readUntilTime(10000);
 			}
 		}
 
