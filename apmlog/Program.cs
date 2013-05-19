@@ -26,12 +26,17 @@ namespace apmlog
 
 		apmcomms.Comms.SerialPort comPort;
 
+
+		bool deleteSourceLogsWhenFinished = true; //TODO get from command line
+		int skipFileSize = 256; //TODO get from command line
+
 		bool threadrun = true;
 
 		int totalLogIdsCount = 0;
 
 		//String firmwareVersionString = "";
-		SortedSet<String> allLogIds = new SortedSet<String> ();
+		SortedDictionary<String,APMLogFileInfo> allLogHeaders = new SortedDictionary<String,APMLogFileInfo> ();
+
 		System.Globalization.CultureInfo cultureInfo = new System.Globalization.CultureInfo("en-US");
 
 		int receivedbytes = 0;
@@ -43,6 +48,12 @@ namespace apmlog
 		Model runmodel = new Model();
 
 
+		public struct APMLogFileInfo
+		{
+			public String logId;
+			public int logLength;
+
+		}
 
 		public struct Data
 		{
@@ -78,7 +89,7 @@ namespace apmlog
 
 			Console.WriteLine ("******************* Connecting to APM *******************");
 
-
+			//TODO get port name from command line settings rather than logic in GetPortNames
 			string lePort = "bogus";
 			string[] portNames = apmcomms.Comms.SerialPort.GetPortNames ();
 			foreach (string portName in portNames) {
@@ -93,6 +104,11 @@ namespace apmlog
 		static void handleException(Exception ex)
 		{
 			log.Debug (ex.ToString());
+		}
+
+		public void handleCommandLineArgs(string[] args)
+		{
+
 		}
 
 		private void waitForBytesAvailable(int time)
@@ -187,7 +203,7 @@ namespace apmlog
 					} // cant exit unless told to
 				}
 
-				if (allLogIds.Count > 0) {
+				if (allLogHeaders.Count > 0) {
 					dumpAllLogs();
 				}
 
@@ -311,19 +327,37 @@ namespace apmlog
 						}
 					}
 
+					//reportStatus ("read " + line.Length + " bytes");
 					receivedbytes += line.Length;
 
 					switch (status) {
 
 						case serialstatus.CollectingLogIds:
 							{
-								Regex regex2 = new Regex(@"^Log ([0-9]+)[,\s]", RegexOptions.IgnoreCase); //"Log 26,    start 567,   end 1140\r\n"
+								//"Log 26,    start 567,   end 1140\r\n"
+								Regex regex2 = new Regex(@"^Log ([0-9]+)[,\s]", RegexOptions.IgnoreCase); //"Log 26,"
 								if (regex2.IsMatch(line)) {
 									MatchCollection match = regex2.Matches(line);
 									String curLogId = match[0].Groups[1].Value;
 									reportStatus ("Log Available: " + line); // curLogId);
-									allLogIds.Add(curLogId);
-									if (allLogIds.Count == totalLogIdsCount) {
+
+									//Log Available: Log 138,    start 3379,   end 3392
+
+									APMLogFileInfo curLogInfo = new APMLogFileInfo();
+									curLogInfo.logId = curLogId;
+									Regex regex4 = new Regex(@"^Log ([0-9]+),[\s]+start[\s]+([0-9]+),[\s]+end[\s]+([0-9]+)", RegexOptions.IgnoreCase);
+									
+									if (regex4.IsMatch(line)) {
+										//determine the length of the log file
+										match = regex4.Matches (line);
+										int logStart = int.Parse (match[0].Groups[2].Value);
+										int logEnd = int.Parse (match[0].Groups[3].Value);
+										curLogInfo.logLength = logEnd - logStart;
+									}
+
+									allLogHeaders.Add (curLogInfo.logId,curLogInfo);
+
+									if (allLogHeaders.Count == totalLogIdsCount) {
 										reportStatus("Done collecting log IDs...");
 										comPort.DiscardInBuffer();
 										threadrun = false;
@@ -355,6 +389,9 @@ namespace apmlog
 
 						case serialstatus.SeekingLogs:
 							{
+						//TODO parse the number of bytes for each log, skip short logs 
+						//Log Available: Log 138,    start 3379,   end 3392
+
 								//Look for line that says eg "19 logs"
 								Regex regex3 = new Regex(@"([0-9]+) logs" , RegexOptions.IgnoreCase);
 								if (regex3.IsMatch(line)) {
@@ -452,26 +489,12 @@ namespace apmlog
 						comPort.DiscardInBuffer();
 						break;
 
-					case serialstatus.DoneDumping:
-//						if (totalLogIdsCount > 0) {
-//							eraseAllLogs();
-//						}
-//						else 
-						{
-							status = serialstatus.Finished;
-						}
-						break;
 
 					case serialstatus.ConfirmErasing:
 						if (line.Contains ("No logs") ||
 						    line.Contains ("logs enabled")) {
 							status = serialstatus.Finished;
 						}
-						break;
-
-					case serialstatus.Finished:
-						reportStatus ("Huzzah! Finished OK");
-						Environment.Exit (0);
 						break;
 
 					default:
@@ -932,23 +955,46 @@ namespace apmlog
 				try {
 					//comPort.Write("\n\n\n\nexit\r\nlogs\r\n"); 
 
-					foreach (String logId in allLogIds) {
+					foreach (String logId in allLogHeaders.Keys) {
 						comPort.DiscardInBuffer();
+						APMLogFileInfo curLogHeader;
+						allLogHeaders.TryGetValue(logId, out curLogHeader);
 
-						String cmd = "dump " + logId + "\r";
-						reportStatus (cmd);
-						System.Threading.Thread.Sleep(100);
-						comPort.Write (cmd );
-						System.Threading.Thread.Sleep(100);
-						comPort.DiscardInBuffer();
-						status = serialstatus.CreateLogFile;
+						String logSummary = "log id " + logId + ", length: " + curLogHeader.logLength;
+						if (curLogHeader.logLength < skipFileSize) { //TODO get the limit value from cmd line parameters
+							reportStatus ("skipping " + logSummary);
+						}
+						else {
+							reportStatus ("dumping " + logSummary);
+							String cmd = "dump " + logId + "\r";
+							System.Threading.Thread.Sleep(100);
+							comPort.Write (cmd );
+							System.Threading.Thread.Sleep(100);
+							comPort.DiscardInBuffer();
+							status = serialstatus.CreateLogFile;
 
-						while ((status != serialstatus.DoneDumpOne) &&
-						       (status != serialstatus.DoneDumping)) {
-							readUntilTime(1000);
+							while ((status != serialstatus.DoneDumpOne) &&
+							       (status != serialstatus.DoneDumping)) {
+								readUntilTime(1000);
+							}
 						}
 					}
+
 					status = serialstatus.DoneDumping;
+
+					if (deleteSourceLogsWhenFinished && (totalLogIdsCount > 0)) {
+						eraseAllLogs();
+					}
+					else 
+					{
+						status = serialstatus.Finished;
+					}
+
+					if (status == serialstatus.Finished) {
+						reportStatus ("Huzzah! Finished OK");
+						Environment.Exit (0);
+					}
+
 				}
 				catch (Exception downloadEx) {
 					reportError("ex dumpAllLogs" + downloadEx);
@@ -971,6 +1017,10 @@ namespace apmlog
 			comPort.Write("erase\r");
 			status = serialstatus.ConfirmErasing;
 			reportStatus("ERASE CAN TAKE A MINUTE OR LONGER");
+
+			while (status != serialstatus.Finished)  {
+				readUntilTime(500);
+			}
 		}
 
 
