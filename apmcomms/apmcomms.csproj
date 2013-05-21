@@ -32,6 +32,18 @@
       <HintPath>..\packages\log4net.2.0.0\lib\net40-full\log4net.dll</HintPath>
     </Reference>
     <Reference Include="System.Management" />
+    <Reference Include="System.Reactive.Interfaces">
+      <HintPath>..\packages\Rx-Interfaces.2.1.30214.0\lib\Net40\System.Reactive.Interfaces.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Reactive.Core">
+      <HintPath>..\packages\Rx-Core.2.1.30214.0\lib\Net40\System.Reactive.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Reactive.Linq">
+      <HintPath>..\packages\Rx-Linq.2.1.30214.0\lib\Net40\System.Reactive.Linq.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Reactive.PlatformServices">
+      <HintPath>..\packages\Rx-PlatformServices.2.1.30214.0\lib\Net40\System.Reactive.PlatformServices.dll</HintPath>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
     <Compile Include="MyClass.cs" />
@@ -42,6 +54,11 @@
     <Compile Include="Comms\CommsFile.cs" />
     <Compile Include="Comms\CommsSerialPort.cs" />
     <Compile Include="Comms\ICommsSerial.cs" />
+    <Compile Include="Mavlink\MavlinkCRC.cs" />
+    <Compile Include="Mavlink\MavlinkUtil.cs" />
+    <Compile Include="Mavlink\MAVLinkTypes.cs" />
+    <Compile Include="Mavlink\MAVLink.cs" />
+    <Compile Include="APMBoardConstants.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <ItemGroup>
@@ -50,5 +67,11 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\apmbase\apmbase.csproj">
+      <Project>{190D2DFF-8CBC-4C38-B107-975E98C4B38F}</Project>
+      <Name>apmbase</Name>
+    </ProjectReference>
   </ItemGroup>
 </Project>
