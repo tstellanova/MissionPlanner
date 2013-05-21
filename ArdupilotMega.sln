@@ -37,12 +37,20 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "apmlog", "apmlog\apmlog.csp
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "apmcomms", "apmcomms\apmcomms.csproj", "{426EE3A9-05A6-4772-9A18-10145A876863}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "apmconfig", "apmconfig\apmconfig.csproj", "{A1FD0FCF-BB52-4B02-A549-C8BCA3D7E4A0}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "apmbase", "apmbase\apmbase.csproj", "{190D2DFF-8CBC-4C38-B107-975E98C4B38F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x86 = Debug|x86
 		Release|x86 = Release|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{190D2DFF-8CBC-4C38-B107-975E98C4B38F}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{190D2DFF-8CBC-4C38-B107-975E98C4B38F}.Debug|x86.Build.0 = Debug|Any CPU
+		{190D2DFF-8CBC-4C38-B107-975E98C4B38F}.Release|x86.ActiveCfg = Release|Any CPU
+		{190D2DFF-8CBC-4C38-B107-975E98C4B38F}.Release|x86.Build.0 = Release|Any CPU
 		{2541686B-1673-43BF-AF89-3163945DB009}.Debug|x86.ActiveCfg = Debug|Any CPU
 		{2541686B-1673-43BF-AF89-3163945DB009}.Debug|x86.Build.0 = Debug|Any CPU
 		{2541686B-1673-43BF-AF89-3163945DB009}.Release|x86.ActiveCfg = Release|Any CPU
@@ -79,6 +87,10 @@ Global
 		{9CA367B8-0B98-49D1-84FB-735E612E3BA9}.Debug|x86.Build.0 = Debug|Any CPU
 		{9CA367B8-0B98-49D1-84FB-735E612E3BA9}.Release|x86.ActiveCfg = Release|Any CPU
 		{9CA367B8-0B98-49D1-84FB-735E612E3BA9}.Release|x86.Build.0 = Release|Any CPU
+		{A1FD0FCF-BB52-4B02-A549-C8BCA3D7E4A0}.Debug|x86.ActiveCfg = Debug|x86
+		{A1FD0FCF-BB52-4B02-A549-C8BCA3D7E4A0}.Debug|x86.Build.0 = Debug|x86
+		{A1FD0FCF-BB52-4B02-A549-C8BCA3D7E4A0}.Release|x86.ActiveCfg = Release|x86
+		{A1FD0FCF-BB52-4B02-A549-C8BCA3D7E4A0}.Release|x86.Build.0 = Release|x86
 		{A2E22272-95FE-47B6-B050-9AE7E2055BF5}.Debug|x86.ActiveCfg = Debug|x86
 		{A2E22272-95FE-47B6-B050-9AE7E2055BF5}.Debug|x86.Build.0 = Debug|x86
 		{A2E22272-95FE-47B6-B050-9AE7E2055BF5}.Release|x86.ActiveCfg = Release|x86
@@ -117,7 +129,7 @@ Global
 		{E64A1A41-A5B0-458E-8284-BB63705354DA}.Release|x86.Build.0 = Release|x86
 	EndGlobalSection
 	GlobalSection(MonoDevelopProperties) = preSolution
-		StartupItem = apmlog\apmlog.csproj
+		StartupItem = apmconfig\apmconfig.csproj
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
